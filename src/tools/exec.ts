@@ -1,4 +1,4 @@
-import { execa, type Options as ExecaOptions } from 'execa';
+import { execa } from 'execa';
 
 export interface ExecResult {
   stdout: string;
@@ -11,18 +11,15 @@ export async function exec(
   args: string[],
   opts?: { timeout?: number; cwd?: string; stdin?: string },
 ): Promise<ExecResult> {
-  const options: ExecaOptions = {
+  const result = await execa(command, args, {
     timeout: opts?.timeout ?? 30_000,
     cwd: opts?.cwd,
     reject: false,
-  };
-  if (opts?.stdin) {
-    options.input = opts.stdin;
-  }
-  const result = await execa(command, args, options);
+    ...(opts?.stdin ? { input: opts.stdin } : {}),
+  });
   return {
-    stdout: result.stdout ?? '',
-    stderr: result.stderr ?? '',
+    stdout: String(result.stdout ?? ''),
+    stderr: String(result.stderr ?? ''),
     exitCode: result.exitCode ?? 1,
   };
 }
