@@ -3,6 +3,7 @@ import { zodResponseFormat } from 'openai/helpers/zod';
 import type { z } from 'zod';
 import type { TokenUsage, ToolDef, ToolResult } from '../types.js';
 import type { LLMProvider, AnalyzeOpts, RunWithToolsOpts } from './interface.js';
+import type { Logger } from '../modules/logger.js';
 
 function zodToFunctionParameters(schema: z.ZodType): Record<string, unknown> {
   const def = (schema as unknown as { _def: { typeName: string } })._def;
@@ -30,13 +31,24 @@ export class OpenAIProvider implements LLMProvider {
   readonly name = 'openai' as const;
   private client: OpenAI;
   private model: string;
+  private logger?: Logger;
 
-  constructor(apiKey: string, model: string) {
+  constructor(apiKey: string, model: string, logger?: Logger) {
     this.client = new OpenAI({ apiKey });
     this.model = model;
+    this.logger = logger;
   }
 
   async analyze<T extends z.ZodType>(opts: AnalyzeOpts<T>): Promise<{ parsed: z.infer<T>; usage: TokenUsage }> {
+    this.logger?.log('llm.request', {
+      payload: {
+        provider: 'openai',
+        model: this.model,
+        ...(this.logger.verbose ? { system_prompt: opts.system, user_content: opts.userContent } : {}),
+        max_tokens: opts.maxTokens ?? 4096,
+      },
+    });
+
     const completion = await this.client.chat.completions.parse({
       model: this.model,
       max_tokens: opts.maxTokens ?? 4096,
@@ -52,13 +64,23 @@ export class OpenAIProvider implements LLMProvider {
       throw new Error('No parsed response from OpenAI');
     }
 
-    const usage = completion.usage;
+    const usage = {
+      inputTokens: completion.usage?.prompt_tokens ?? 0,
+      outputTokens: completion.usage?.completion_tokens ?? 0,
+    };
+
+    this.logger?.log('llm.response', {
+      payload: {
+        provider: 'openai',
+        usage,
+        ...(this.logger.verbose ? { raw_response: completion.choices[0]?.message?.content } : {}),
+        parsed_output: message.parsed,
+      },
+    });
+
     return {
       parsed: message.parsed as z.infer<T>,
-      usage: {
-        inputTokens: usage?.prompt_tokens ?? 0,
-        outputTokens: usage?.completion_tokens ?? 0,
-      },
+      usage,
     };
   }
 
@@ -82,6 +104,15 @@ export class OpenAIProvider implements LLMProvider {
     let totalInput = 0;
     let totalOutput = 0;
 
+    this.logger?.log('llm.request', {
+      payload: {
+        provider: 'openai',
+        model: this.model,
+        ...(this.logger.verbose ? { system_prompt: opts.system, user_content: opts.userContent } : {}),
+        max_tokens: opts.maxTokens ?? 4096,
+      },
+    });
+
     for (let i = 0; i < maxIterations; i++) {
       const response = await this.client.chat.completions.create({
         model: this.model,
@@ -92,6 +123,17 @@ export class OpenAIProvider implements LLMProvider {
 
       totalInput += response.usage?.prompt_tokens ?? 0;
       totalOutput += response.usage?.completion_tokens ?? 0;
+
+      this.logger?.log('llm.response', {
+        payload: {
+          provider: 'openai',
+          usage: {
+            inputTokens: response.usage?.prompt_tokens ?? 0,
+            outputTokens: response.usage?.completion_tokens ?? 0,
+          },
+          ...(this.logger.verbose ? { raw_response: response.choices[0]?.message?.content } : {}),
+        },
+      });
 
       const choice = response.choices[0];
       if (!choice) break;

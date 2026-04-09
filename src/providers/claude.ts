@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { z } from 'zod';
 import type { TokenUsage, ToolDef, ToolResult } from '../types.js';
 import type { LLMProvider, AnalyzeOpts, RunWithToolsOpts } from './interface.js';
+import type { Logger } from '../modules/logger.js';
 
 function zodToInputSchema(schema: z.ZodType): Anthropic.Tool.InputSchema {
   const def = (schema as unknown as { _def: { typeName: string } })._def;
@@ -23,13 +24,24 @@ export class ClaudeProvider implements LLMProvider {
   readonly name = 'claude' as const;
   private client: Anthropic;
   private model: string;
+  private logger?: Logger;
 
-  constructor(apiKey: string, model: string) {
+  constructor(apiKey: string, model: string, logger?: Logger) {
     this.client = new Anthropic({ apiKey });
     this.model = model;
+    this.logger = logger;
   }
 
   async analyze<T extends z.ZodType>(opts: AnalyzeOpts<T>): Promise<{ parsed: z.infer<T>; usage: TokenUsage }> {
+    this.logger?.log('llm.request', {
+      payload: {
+        provider: 'claude',
+        model: this.model,
+        ...(this.logger.verbose ? { system_prompt: opts.system, user_content: opts.userContent } : {}),
+        max_tokens: opts.maxTokens ?? 4096,
+      },
+    });
+
     const message = await this.client.messages.create({
       model: this.model,
       max_tokens: opts.maxTokens ?? 4096,
@@ -47,12 +59,20 @@ export class ClaudeProvider implements LLMProvider {
       throw new Error(`Schema validation failed: ${result.error.message}`);
     }
 
+    const usage = { inputTokens: message.usage.input_tokens, outputTokens: message.usage.output_tokens };
+
+    this.logger?.log('llm.response', {
+      payload: {
+        provider: 'claude',
+        usage,
+        ...(this.logger.verbose ? { raw_response: text } : {}),
+        parsed_output: result.data,
+      },
+    });
+
     return {
       parsed: result.data as z.infer<T>,
-      usage: {
-        inputTokens: message.usage.input_tokens,
-        outputTokens: message.usage.output_tokens,
-      },
+      usage,
     };
   }
 
@@ -70,6 +90,15 @@ export class ClaudeProvider implements LLMProvider {
     let totalInput = 0;
     let totalOutput = 0;
 
+    this.logger?.log('llm.request', {
+      payload: {
+        provider: 'claude',
+        model: this.model,
+        ...(this.logger.verbose ? { system_prompt: opts.system, user_content: opts.userContent } : {}),
+        max_tokens: opts.maxTokens ?? 4096,
+      },
+    });
+
     for (let i = 0; i < maxIterations; i++) {
       const response = await this.client.messages.create({
         model: this.model,
@@ -81,6 +110,14 @@ export class ClaudeProvider implements LLMProvider {
 
       totalInput += response.usage.input_tokens;
       totalOutput += response.usage.output_tokens;
+
+      this.logger?.log('llm.response', {
+        payload: {
+          provider: 'claude',
+          usage: { inputTokens: response.usage.input_tokens, outputTokens: response.usage.output_tokens },
+          ...(this.logger.verbose ? { raw_response: response.content } : {}),
+        },
+      });
 
       const toolUseBlocks = response.content.filter((b) => b.type === 'tool_use') as Anthropic.ToolUseBlock[];
 
