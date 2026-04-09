@@ -10,6 +10,7 @@ import { triageCrashDir } from './modules/crash-triage.js';
 import { testExploit, detectExploitSuccess } from './modules/exploit-test.js';
 import { analyzeForVulnerabilities, generateExploitCode, triageCrashWithLLM } from './modules/llm.js';
 import { runGdbScript, findCrashOffset } from './tools/gdb.js';
+import { Logger } from './modules/logger.js';
 
 // Suppress unused import warnings for tools that are part of the API surface
 void compileHarness;
@@ -32,6 +33,7 @@ export interface PipelineOpts {
   config: Config;
   provider: LLMProvider;
   mode: 'pwn' | 'recon' | 'hunt' | 'fuzz' | 'exploit' | 'full';
+  logger?: Logger;
 }
 
 export interface PipelineResult {
@@ -70,29 +72,50 @@ export async function runPipeline(opts: PipelineOpts): Promise<PipelineResult> {
 
   await mkdir(outputDir, { recursive: true });
 
+  const logger = opts.logger ?? Logger.noop();
+  logger.log('pipeline.start', {
+    payload: { mode, binary_path: binaryPath, config },
+  });
+  const pipelineStart = performance.now();
+
   // --- Recon ---
   let recon: ReconOutput;
 
   if (mode === 'exploit') {
     const reconPath = join(outputDir, 'recon.json');
     if (!existsSync(reconPath)) {
+      logger.log('pipeline.end', {
+        payload: { success: false, message: `recon.json not found at ${reconPath}`, total_duration_ms: Math.round(performance.now() - pipelineStart) },
+      });
+      logger.close();
       return { success: false, message: `recon.json not found at ${reconPath}` };
     }
     console.log('[recon] Loading existing recon.json');
     recon = JSON.parse(await readFile(reconPath, 'utf-8')) as ReconOutput;
   } else {
     console.log('[recon] Starting binary analysis');
-    recon = await runRecon(binaryPath, { libcPath, outputDir });
+    recon = await logger.time('stage', 'recon', () =>
+      runRecon(binaryPath, { libcPath, outputDir }),
+    );
     console.log(`[recon] Found ${recon.functions.length} functions`);
   }
 
   if (mode === 'recon') {
+    logger.log('pipeline.end', {
+      payload: { success: true, message: 'Recon complete', total_duration_ms: Math.round(performance.now() - pipelineStart) },
+    });
+    logger.close();
     return { recon, success: true, message: 'Recon complete' };
   }
 
   // --- Recon gate ---
   const reconGate = validateReconGate(recon);
+  logger.log('gate.result', { payload: { gate_name: 'recon', ...reconGate } });
   if (!reconGate.pass) {
+    logger.log('pipeline.end', {
+      payload: { success: false, message: reconGate.reason ?? 'Recon gate failed', total_duration_ms: Math.round(performance.now() - pipelineStart) },
+    });
+    logger.close();
     return { recon, success: false, message: reconGate.reason ?? 'Recon gate failed' };
   }
 
@@ -127,6 +150,10 @@ export async function runPipeline(opts: PipelineOpts): Promise<PipelineResult> {
         };
         confirmedVulns.push(confirmed);
         console.log(`[hunt] Confirmed: ${hypothesis.function}`);
+        logger.log('hypothesis.result', {
+          stage: 'hunt',
+          payload: { function: hypothesis.function, vuln_class: hypothesis.vuln_class, status: 'confirmed', primitive: hypothesis.primitive },
+        });
       }
     } catch {
       // Hypothesis could not be confirmed via GDB
@@ -144,18 +171,31 @@ export async function runPipeline(opts: PipelineOpts): Promise<PipelineResult> {
   console.log(`[hunt] Wrote hunter.json (${confirmedVulns.length} confirmed vulns)`);
 
   if (mode === 'hunt' || mode === 'fuzz') {
+    logger.log('pipeline.end', {
+      payload: { success: true, message: `Hunt complete (${confirmedVulns.length} confirmed)`, total_duration_ms: Math.round(performance.now() - pipelineStart) },
+    });
+    logger.close();
     return { recon, hunter, success: true, message: `Hunt complete (${confirmedVulns.length} confirmed)` };
   }
 
   // --- Hunter gate ---
   const hunterGate = validateHunterGate(hunter);
+  logger.log('gate.result', { payload: { gate_name: 'hunter', ...hunterGate } });
   if (!hunterGate.pass) {
+    logger.log('pipeline.end', {
+      payload: { success: false, message: hunterGate.reason ?? 'Hunter gate failed', total_duration_ms: Math.round(performance.now() - pipelineStart) },
+    });
+    logger.close();
     return { recon, hunter, success: false, message: hunterGate.reason ?? 'Hunter gate failed' };
   }
 
   // --- Exploit ---
   const targetVuln = hunter.confirmed_vulns[0] ?? hunter.hypotheses.find((h) => h.status === 'confirmed');
   if (!targetVuln) {
+    logger.log('pipeline.end', {
+      payload: { success: false, message: 'No confirmed vulnerability to exploit', total_duration_ms: Math.round(performance.now() - pipelineStart) },
+    });
+    logger.close();
     return { recon, hunter, success: false, message: 'No confirmed vulnerability to exploit' };
   }
 
@@ -174,6 +214,11 @@ export async function runPipeline(opts: PipelineOpts): Promise<PipelineResult> {
     const result = await testExploit(exploitPath, config.exploit.testTimeout);
     lastOutput = result.output;
 
+    logger.log('exploit.attempt', {
+      stage: 'exploit',
+      payload: { attempt_number: attempt, success: result.success, output: result.output },
+    });
+
     if (result.success) {
       exploitSuccess = true;
       console.log('[exploit] Local test succeeded');
@@ -184,6 +229,10 @@ export async function runPipeline(opts: PipelineOpts): Promise<PipelineResult> {
   }
 
   if (!exploitSuccess) {
+    logger.log('pipeline.end', {
+      payload: { success: false, message: 'Exploit failed after max retries', total_duration_ms: Math.round(performance.now() - pipelineStart) },
+    });
+    logger.close();
     return { recon, hunter, exploitPath, success: false, message: 'Exploit failed after max retries' };
   }
 
@@ -192,6 +241,10 @@ export async function runPipeline(opts: PipelineOpts): Promise<PipelineResult> {
     const remoteResult = await testExploit(exploitPath, config.exploit.testTimeout, 'REMOTE');
     lastOutput = remoteResult.output;
     if (!remoteResult.success) {
+      logger.log('pipeline.end', {
+        payload: { success: false, message: 'Remote exploit test failed', total_duration_ms: Math.round(performance.now() - pipelineStart) },
+      });
+      logger.close();
       return { recon, hunter, exploitPath, success: false, message: 'Remote exploit test failed' };
     }
     console.log('[exploit] Remote test succeeded');
@@ -199,5 +252,9 @@ export async function runPipeline(opts: PipelineOpts): Promise<PipelineResult> {
 
   void lastOutput;
 
+  logger.log('pipeline.end', {
+    payload: { success: true, message: 'Exploit successful', total_duration_ms: Math.round(performance.now() - pipelineStart) },
+  });
+  logger.close();
   return { recon, hunter, exploitPath, success: true, message: 'Exploit successful' };
 }
