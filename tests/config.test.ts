@@ -81,3 +81,17 @@ describe('resolveConfig', () => {
     expect(openaiConfig.model).toBe('codex-mini-latest');
   });
 });
+
+describe('log config', () => {
+  it('defaults to logging enabled, verbose off', () => {
+    const config = resolveConfig({});
+    expect(config.log.enabled).toBe(true);
+    expect(config.log.verbose).toBe(false);
+  });
+
+  it('respects logEnabled and logVerbose overrides', () => {
+    const config = resolveConfig({ logEnabled: false, logVerbose: true });
+    expect(config.log.enabled).toBe(false);
+    expect(config.log.verbose).toBe(true);
+  });
+});

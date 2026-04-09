@@ -12,6 +12,10 @@ export interface Config {
   };
   parallel: number;
   outputDir: string;
+  log: {
+    enabled: boolean;
+    verbose: boolean;
+  };
 }
 
 export interface ConfigOverrides {
@@ -24,6 +28,8 @@ export interface ConfigOverrides {
   testTimeout?: number;
   parallel?: number;
   outputDir?: string;
+  logEnabled?: boolean;
+  logVerbose?: boolean;
 }
 
 const DEFAULT_MODELS: Record<'claude' | 'openai', string> = {
@@ -44,6 +50,10 @@ export const DEFAULT_CONFIG: Config = {
   },
   parallel: 4,
   outputDir: './output',
+  log: {
+    enabled: true,
+    verbose: false,
+  },
 };
 
 export function resolveConfig(overrides: ConfigOverrides = {}): Config {
@@ -74,5 +84,9 @@ export function resolveConfig(overrides: ConfigOverrides = {}): Config {
     },
     parallel: overrides.parallel ?? DEFAULT_CONFIG.parallel,
     outputDir: overrides.outputDir ?? DEFAULT_CONFIG.outputDir,
+    log: {
+      enabled: overrides.logEnabled ?? DEFAULT_CONFIG.log.enabled,
+      verbose: overrides.logVerbose ?? DEFAULT_CONFIG.log.verbose,
+    },
   };
 }
