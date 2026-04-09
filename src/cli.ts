@@ -8,6 +8,7 @@ import { resolveConfig, type ConfigOverrides } from './config.js';
 import { createProvider } from './providers/factory.js';
 import { runPipeline, type PipelineOpts } from './pipeline.js';
 import { Logger } from './modules/logger.js';
+import { extractToFile } from './tools/log-extract.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8')) as {
@@ -207,5 +208,20 @@ addCommonOpts(
 
   process.exit(anyFailed ? 1 : 0);
 });
+
+program
+  .command('extract-training <logs...>')
+  .description('Extract training data from run logs')
+  .requiredOption('--format <format>', 'Output format: openai, rag, or metrics')
+  .option('--output <path>', 'Output file path', './training_data.jsonl')
+  .action(async (logs: string[], opts: { format: string; output: string }) => {
+    const format = opts.format as 'openai' | 'rag' | 'metrics';
+    if (!['openai', 'rag', 'metrics'].includes(format)) {
+      console.error(`Invalid format: ${format}. Use: openai, rag, metrics`);
+      process.exit(1);
+    }
+    await extractToFile(logs, opts.output, format);
+    console.log(`Extracted ${format} data to ${opts.output}`);
+  });
 
 program.parse();
