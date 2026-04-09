@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:red.anthropic.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(git branch:*)",
+      "Bash(git commit -m ':*)",
+      "Bash(npx vitest:*)",
+      "Bash(git add:*)",
+      "Bash(git init:*)",
+      "Bash(git commit:*)",
+      "Bash(sshpass -p 'kali' rsync -avz --exclude 'node_modules' --exclude 'dist' --exclude '.git' -e ssh /Users/n3m0/Code/agent-fuzz-skills/ kali@192.168.8.203:~/Code/agent-fuzz-skills/)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [{
+      "matcher": "*",
+      "hooks": [{
+        "type": "command",
+        "command": "hooks/log-tool-use.sh"
+      }]
+    }]
+  }
+}
