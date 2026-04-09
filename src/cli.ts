@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdirSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveConfig, type ConfigOverrides } from './config.js';
 import { createProvider } from './providers/factory.js';
 import { runPipeline, type PipelineOpts } from './pipeline.js';
+import { Logger } from './modules/logger.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8')) as {
@@ -29,7 +30,9 @@ function addCommonOpts(cmd: Command): Command {
     .option('--remote <host:port>', 'remote target')
     .option('--output <dir>', 'output directory', './output')
     .option('--fuzz-timeout <seconds>', 'fuzzing timeout in seconds', '600')
-    .option('--max-retries <n>', 'max exploit retries', '5');
+    .option('--max-retries <n>', 'max exploit retries', '5')
+    .option('--no-log', 'disable logging')
+    .option('--verbose-log', 'log full LLM prompts and responses');
 }
 
 function parseRemote(str?: string): { host: string; port: number } | undefined {
@@ -51,6 +54,8 @@ interface CommonOpts {
   output: string;
   fuzzTimeout: string;
   maxRetries: string;
+  log?: boolean;        // commander inverts --no-log to opts.log = false
+  verboseLog?: boolean;
 }
 
 async function runMode(
@@ -64,10 +69,24 @@ async function runMode(
     fuzzTimeout: parseInt(opts.fuzzTimeout, 10),
     maxRetries: parseInt(opts.maxRetries, 10),
     outputDir: opts.output,
+    logEnabled: opts.log !== false,
+    logVerbose: opts.verboseLog,
   };
 
   const config = resolveConfig(overrides);
-  const provider = createProvider(config);
+
+  mkdirSync(config.outputDir, { recursive: true });
+  const logger = config.log.enabled
+    ? Logger.init(config.outputDir, { verbose: config.log.verbose ?? false })
+    : Logger.noop();
+
+  const provider = createProvider({
+    provider: config.provider,
+    model: config.model,
+    apiKey: config.apiKey,
+    logger,
+  });
+
   const result = await runPipeline({
     binaryPath,
     sourceDir: opts.source,
@@ -76,6 +95,7 @@ async function runMode(
     config,
     provider,
     mode,
+    logger,
   });
 
   console.log(result.message);
@@ -157,9 +177,20 @@ addCommonOpts(
       fuzzTimeout: parseInt(batchOpts.fuzzTimeout, 10),
       maxRetries: parseInt(batchOpts.maxRetries, 10),
       outputDir: batchOpts.output,
+      logEnabled: batchOpts.log !== false,
+      logVerbose: batchOpts.verboseLog,
     };
     const config = resolveConfig(overrides);
-    const provider = createProvider(config);
+    mkdirSync(config.outputDir, { recursive: true });
+    const logger = config.log.enabled
+      ? Logger.init(config.outputDir, { verbose: config.log.verbose ?? false })
+      : Logger.noop();
+    const provider = createProvider({
+      provider: config.provider,
+      model: config.model,
+      apiKey: config.apiKey,
+      logger,
+    });
     const result = await runPipeline({
       binaryPath,
       sourceDir: batchOpts.source,
@@ -168,6 +199,7 @@ addCommonOpts(
       config,
       provider,
       mode: 'pwn',
+      logger,
     });
     console.log(`[batch] ${file}: ${result.message}`);
     if (!result.success) anyFailed = true;
