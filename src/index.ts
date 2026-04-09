@@ -14,3 +14,5 @@ export { type LLMProvider } from './providers/interface.js';
 export { createProvider } from './providers/factory.js';
 export { runPipeline } from './pipeline.js';
 export { runRecon } from './modules/recon.js';
+export { Logger, type LogEvent } from './modules/logger.js';
+export { extractOpenAI, extractRAG, extractMetrics } from './tools/log-extract.js';
